@@ -141,9 +141,21 @@ class TelegramHub:
         message = update.effective_message
         if not message or not message.text:
             return
-        if update.effective_chat is None or update.effective_chat.id != self.group_chat_id:
-            return
+        chat = update.effective_chat
         sender = update.effective_user
+        log.info(
+            "Update received: chat_id=%s sender_id=%s text=%r",
+            chat.id if chat else None,
+            sender.id if sender else None,
+            message.text[:60],
+        )
+        if chat is None or chat.id != self.group_chat_id:
+            log.warning(
+                "Ignoring message from chat %s (expected %s) — check GROUP_CHAT_ID",
+                chat.id if chat else None,
+                self.group_chat_id,
+            )
+            return
         if sender is None:
             return
 
@@ -153,8 +165,11 @@ class TelegramHub:
             return
 
         if sender.id != self.god_user_id:
-            # Spec only models the human "god"; non-god humans are ignored.
-            log.debug("Ignoring message from non-god human %s", sender.id)
+            log.warning(
+                "Ignoring message from non-god human %s (expected GOD_USER_ID=%s)",
+                sender.id,
+                self.god_user_id,
+            )
             return
 
         if not self._on_human_message:
