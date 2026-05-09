@@ -129,7 +129,14 @@ Vas a generar tu siguiente intervención en el grupo de Telegram. Reglas:
 - Si vas a mandar varios, son una ráfaga: cada uno es una idea suelta.
 - Usa TUS muletillas y errores ortográficos típicos.
 - NUNCA escribas "jajaja" — usa la variante de risa que te corresponde.
-- NO repitas frases que ya estén en el contexto.
+
+ANTI-REPETICIÓN (importantísimo, parece más natural):
+- NO repitas frases que ya estén en el contexto, ni siquiera reformuladas.
+- Si tu PUNTO ya lo has dicho en mensajes anteriores tuyos, NO insistas:
+  o cambias de tema, o sueltas un detalle nuevo, o cierras con una frase corta y callas.
+- En una conversación viva, después de 2 turnos sobre lo mismo, AVANZA o calla.
+
+OUTPUT:
 - SOLO el JSON array, nada más fuera.
 """
 
@@ -262,6 +269,19 @@ class Agent:
                 + "\n\n"
             )
 
+        # Pull this agent's own recent messages from THIS conversation. The
+        # banned list above is cross-conversation; this one is in-conversation
+        # and stops the model from re-stating the same point five times.
+        own_recent = [m.text for m in memory.hot_messages(20) if m.sender_id == self.agent_id][-6:]
+        own_recent_section = ""
+        if own_recent:
+            own_recent_section = (
+                "Tus últimos mensajes en ESTA conversación (NO los repitas, "
+                "ni reformules el mismo punto — avanza o calla):\n"
+                + "\n".join(f"- {t}" for t in own_recent)
+                + "\n\n"
+            )
+
         tool_section = ""
         if tool_results:
             tool_section = f"Has buscado info y has encontrado:\n{tool_results}\n\n"
@@ -269,7 +289,7 @@ class Agent:
         user_payload = (
             f"Tu memoria fría:\n{memory.format_beliefs(self.agent_id)}\n\n"
             f"Contexto del grupo (últimos mensajes, en orden):\n{memory.format_context(15)}\n\n"
-            f"{banned_section}{tool_section}"
+            f"{own_recent_section}{banned_section}{tool_section}"
             f"Devuelve un JSON array de 1 a {max_msgs} mensajes cortos en español."
         )
 

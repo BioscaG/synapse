@@ -203,49 +203,71 @@ class ConversationManager:
         if not evaluators:
             return
 
-        raw_evals = await asyncio.gather(
-            *(
-                a.evaluate_message(self.client, self.config.model_fast, message, self.memory)
-                for a in evaluators
-            ),
-            return_exceptions=True,
-        )
-
         candidates: list[tuple[Agent, Evaluation]] = []
-        for agent, raw in zip(evaluators, raw_evals):
-            if isinstance(raw, BaseException):
-                log.warning("Eval crashed for %s: %s", agent.agent_id, raw)
-                continue
 
-            seed = raw
-            if force_priority:
-                seed = Evaluation(
+        if force_priority:
+            # God spoke. All bots will be forced to respond regardless of what
+            # the model says, so skip the evaluate_message API calls entirely
+            # and build a synthetic evaluation per agent. Saves 3 Haiku calls
+            # per god message.
+            text_lower = message.text.lower()
+            for agent in evaluators:
+                is_named = agent.name.lower() in text_lower or agent.agent_id in text_lower
+                synthetic = Evaluation(
                     wants_to_respond=True,
                     urgency=1.0,
-                    estimated_delay=max(0.5, raw.estimated_delay),
-                    is_rafaga=raw.is_rafaga,
-                    rafaga_count=raw.rafaga_count,
-                    needs_tools=raw.needs_tools or force_deep,
-                    tool_to_use=raw.tool_to_use,
+                    estimated_delay=0.8 if is_named else 2.5,
+                    is_rafaga=False,
+                    rafaga_count=1,
+                    needs_tools=force_deep,
+                    tool_to_use=None,
                     react_emoji=None,
-                    reason="god priority",
+                    reason="god priority (eval skipped)",
                 )
+                adjusted = adjust_evaluation(agent, synthetic, message, self.memory)
+                if adjusted.wants_to_respond:
+                    candidates.append((agent, adjusted))
+        else:
+            raw_evals = await asyncio.gather(
+                *(
+                    a.evaluate_message(self.client, self.config.model_fast, message, self.memory)
+                    for a in evaluators
+                ),
+                return_exceptions=True,
+            )
 
-            adjusted = adjust_evaluation(agent, seed, message, self.memory)
-            if adjusted.wants_to_respond:
-                candidates.append((agent, adjusted))
-            elif adjusted.react_emoji and self._react and message.telegram_message_id:
-                await self._react(
-                    agent.agent_id, message.telegram_message_id, adjusted.react_emoji
-                )
+            for agent, raw in zip(evaluators, raw_evals):
+                if isinstance(raw, BaseException):
+                    log.warning("Eval crashed for %s: %s", agent.agent_id, raw)
+                    continue
+
+                adjusted = adjust_evaluation(agent, raw, message, self.memory)
+                if adjusted.wants_to_respond:
+                    candidates.append((agent, adjusted))
+                elif adjusted.react_emoji and self._react and message.telegram_message_id:
+                    await self._react(
+                        agent.agent_id, message.telegram_message_id, adjusted.react_emoji
+                    )
 
         if not candidates:
             log.debug("Nobody wants to respond to %s", message.sender_id)
             return
 
-        # Highest urgency wins; ties broken by shorter delay.
-        candidates.sort(key=lambda pair: (-pair[1].urgency, pair[1].estimated_delay))
-        chosen_agent, chosen_eval = candidates[0]
+        # If anyone was named by name in the message, they win unconditionally —
+        # otherwise the delay floor (0.3s) lets faster-base agents win even
+        # when the message clearly addresses someone specific.
+        text_lower = message.text.lower()
+        named = [
+            (a, e)
+            for a, e in candidates
+            if a.name.lower() in text_lower or a.agent_id in text_lower
+        ]
+        if named:
+            chosen_agent, chosen_eval = named[0]
+        else:
+            # Highest urgency wins; ties broken by shorter delay.
+            candidates.sort(key=lambda pair: (-pair[1].urgency, pair[1].estimated_delay))
+            chosen_agent, chosen_eval = candidates[0]
         runners_up = [c[0].agent_id for c in candidates[1:]] or "none"
         log.info(
             "Dispatch: %s wins (urgency=%.2f, delay=%.1fs) over %s",

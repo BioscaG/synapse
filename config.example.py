@@ -25,11 +25,14 @@ GOD_USER_ID = 0
 # Fast, cheap model used for ~90% of interactions (turn evaluation, normal replies).
 MODEL_FAST = "claude-haiku-4-5-20251001"
 # Deeper model used for analysis, web search, document generation, brainstorm mode.
-MODEL_DEEP = "claude-sonnet-4-20250514"
+MODEL_DEEP = "claude-sonnet-4-6"
 
 # === Cost / safety limits ===
 MAX_SPONTANEOUS_CONVOS_PER_DAY = 3
-MAX_MESSAGES_PER_CONVO = 25
+# Target chat length range from the spec: 10–25 messages. Real-API
+# simulations showed 25 makes conversations drift into repetition; 15 is
+# the sweet spot before the bots start re-stating the same point.
+MAX_MESSAGES_PER_CONVO = 15
 # Each bot turn consumes roughly 3 Haiku calls (2 evaluations from the
 # non-sender bots + 1 generation). 1000 covers ~10 conversations of 25 msgs,
 # leaving plenty of headroom for spontaneous chats and belief updates.

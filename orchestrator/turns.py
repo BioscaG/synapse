@@ -41,7 +41,7 @@ OVERRIDE_PROBABILITY = 0.80
 
 # Below this many messages in hot memory, every silent agent is force-included
 # at least once. Guarantees a minimum 3-4 turn conversation after god speaks.
-FRESH_CONVERSATION_DEPTH = 8
+FRESH_CONVERSATION_DEPTH = 10
 
 
 def is_reaction_message(text: str) -> bool:
@@ -69,8 +69,8 @@ def is_substantive(text: str) -> bool:
     return len(stripped.split()) >= 5
 
 
-EARLY_CONVERSATION_DEPTH = 6  # below this many hot messages, skip random silence
-SCORE_NOISE_RANGE = (0.0, 0.6)  # softer threshold than uniform(0,1): score >=0.6 always passes
+EARLY_CONVERSATION_DEPTH = 10  # below this many hot messages, skip random silence
+SCORE_NOISE_RANGE = (0.0, 0.55)  # softer threshold than uniform(0,1): score >=0.55 always passes
 
 
 def adjust_evaluation(
@@ -202,8 +202,10 @@ def _calculate_delay(agent: "Agent", evaluation: Evaluation, message: "GroupMess
 
     text_lower = message.text.lower()
     if agent.name.lower() in text_lower or agent.agent_id in text_lower:
-        # Mentioned by name → respond before the others.
-        delay *= 0.4
+        # Mentioned by name → respond before the others. Aggressive multiplier
+        # because base delays for slower agents (Víctor's 2-5s) need to drop
+        # below faster agents' god-discounted base (Guido's 0.5-2s × 0.5).
+        delay *= 0.15
 
     if is_reaction_message(message.text):
         delay *= 0.4
