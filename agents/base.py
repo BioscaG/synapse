@@ -31,7 +31,6 @@ import json
 import logging
 import random
 import re
-import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -184,22 +183,11 @@ class Agent:
     system_prompt: str
     config: dict
     tools: list[str] = field(default_factory=list)
-    cooldown_until: float = 0.0
-    consecutive_msgs: int = 0
-    last_msg_time: float = 0.0
 
     # ----------------------------------------------------------------- helpers
     def _format_message(self, message: "GroupMessage") -> str:
         tag = "[DIOS]" if message.is_from_god else f"[{message.sender_name}]"
         return f"{tag} {message.text}"
-
-    def _record_outgoing(self, count: int) -> None:
-        now = time.time()
-        self.consecutive_msgs += count
-        self.last_msg_time = now
-
-    def reset_streak(self) -> None:
-        self.consecutive_msgs = 0
 
     # ----------------------------------------------------------------- LLM-driven decisions
     async def evaluate_message(
@@ -342,10 +330,7 @@ class Agent:
         _record_usage(memory, response)
 
         text = response.content[0].text if response.content else ""
-        messages = _parse_messages(text, max_msgs)
-        if messages:
-            self._record_outgoing(len(messages))
-        return messages
+        return _parse_messages(text, max_msgs)
 
     async def generate_spontaneous(
         self,

@@ -155,7 +155,6 @@ class ConversationManager:
             # only fires when nobody (not even the bots themselves) has spoken
             # for a long time.
             self._last_activity_at = datetime.utcnow()
-            agent.last_msg_time = time.time()
 
         if last_msg and self._can_continue_conversation():
             await self._dispatch(last_msg)

@@ -85,6 +85,8 @@ def adjust_evaluation(
         memory.previous_speaker_excluding(message.sender_id) if is_question else None
     )
     is_implicitly_addressed = implicit_addressee == agent.agent_id
+    text_lower = message.text.lower()
+    is_named_directly = agent.name.lower() in text_lower or agent.agent_id in text_lower
 
     # Force-engage every bot in a fresh conversation. If we're still in the
     # first few hot messages and this agent hasn't said anything yet, they
@@ -99,6 +101,7 @@ def adjust_evaluation(
 
     if not evaluation.wants_to_respond:
         # Override the model's "no" when:
+        # - the agent is named explicitly (always override, no dice roll), OR
         # - the agent hasn't spoken yet in a fresh conversation, OR
         # - the agent is the implicit addressee of a question, OR
         # - the message is substantive AND the agent isn't overexposed.
@@ -106,7 +109,8 @@ def adjust_evaluation(
             memory.last_speaker != agent.agent_id
             and memory.consecutive_count(agent.agent_id) < 3
             and (
-                fresh_convo_force
+                is_named_directly
+                or fresh_convo_force
                 or is_implicitly_addressed
                 or (is_substantive(message.text) and random.random() < OVERRIDE_PROBABILITY)
             )
@@ -115,18 +119,22 @@ def adjust_evaluation(
             evaluation = Evaluation(
                 wants_to_respond=True,
                 urgency=(
-                    0.9
+                    0.95
+                    if is_named_directly
+                    else 0.9
                     if (fresh_convo_force or is_implicitly_addressed)
                     else 0.6
                 ),
-                estimated_delay=1.5 if is_implicitly_addressed else 2.0,
+                estimated_delay=1.0 if is_named_directly else 1.5 if is_implicitly_addressed else 2.0,
                 is_rafaga=False,
                 rafaga_count=1,
                 needs_tools=False,
                 tool_to_use=None,
                 react_emoji=None,
                 reason=(
-                    "fresh conversation force-engage"
+                    "named directly"
+                    if is_named_directly
+                    else "fresh conversation force-engage"
                     if fresh_convo_force
                     else "implicit addressee"
                     if is_implicitly_addressed
@@ -138,8 +146,7 @@ def adjust_evaluation(
 
     score = evaluation.urgency or agent.config.get("response_probability_base", 0.5)
 
-    text_lower = message.text.lower()
-    if agent.name.lower() in text_lower or agent.agent_id in text_lower:
+    if is_named_directly:
         score = max(score, agent.config.get("response_probability_mention", 0.95))
 
     if is_implicitly_addressed:
