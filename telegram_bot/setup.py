@@ -104,6 +104,7 @@ class TelegramHub:
         agent_id: str,
         text: str,
         reply_to_message_id: int | None = None,
+        parse_mode: str | None = None,
     ) -> int | None:
         bot = self.apps[agent_id].bot
         try:
@@ -111,6 +112,7 @@ class TelegramHub:
                 chat_id=self.group_chat_id,
                 text=text,
                 reply_to_message_id=reply_to_message_id,
+                parse_mode=parse_mode,
             )
             return message.message_id
         except TelegramError:

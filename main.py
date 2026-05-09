@@ -24,8 +24,9 @@ from agents import build_guido, build_jordi, build_victor
 from memory.manager import MemoryManager
 from orchestrator.manager import ConversationManager, ManagerConfig
 from orchestrator.scheduler import SpontaneousScheduler
+from telegram_bot.commands import register_commands
 from telegram_bot.handlers import wire
-from telegram_bot.setup import TelegramHub
+from telegram_bot.setup import PRIMARY_AGENT_ID, TelegramHub
 from tools.registry import ToolRegistry
 
 
@@ -90,6 +91,12 @@ async def _run() -> None:
     )
 
     wire(manager, hub)
+    register_commands(
+        application=hub.apps[PRIMARY_AGENT_ID],
+        hub=hub,
+        manager=manager,
+        primary_agent_id=PRIMARY_AGENT_ID,
+    )
 
     scheduler = SpontaneousScheduler(
         manager=manager,
