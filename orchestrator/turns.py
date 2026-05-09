@@ -34,7 +34,39 @@ AVERAGE_GAP = {"guido": 4.1, "jordi": 4.6, "victor": 5.6}
 
 # Probability that an agent stays quiet even when they want to talk — adds
 # realistic randomness so the bots are not always all triggered together.
-RANDOM_SILENCE_PROB = 0.15
+RANDOM_SILENCE_PROB = 0.10
+
+# Words that flag a message as "substantive group fodder": when present, the
+# heuristic will override a conservative ``respond=false`` from the model with
+# a coin flip, because in this group an idea/business/plan always sparks debate.
+SUBSTANTIVE_KEYWORDS = (
+    "idea",
+    "negocio",
+    "startup",
+    "plugin",
+    " app ",
+    " app?",
+    " app.",
+    "proyecto",
+    "monto",
+    "montar",
+    "monetiza",
+    "mercado",
+    "competencia",
+    "invert",
+    "invierto",
+    "inversi",
+    "ai ",
+    " ia ",
+    " ia,",
+    " ia.",
+    "modelo de",
+    "lanzar",
+    "vender",
+    "comprar",
+)
+
+OVERRIDE_PROBABILITY = 0.65
 
 
 def is_reaction_message(text: str) -> bool:
@@ -46,6 +78,16 @@ def is_reaction_message(text: str) -> bool:
     return stripped in {"xd", "xdd", "xddd", "bro", "yes", "no", "ya", "si", "sep", "vale", "rt"}
 
 
+def is_substantive(text: str) -> bool:
+    """Heuristic: looks like content the group would naturally debate."""
+    lower = text.lower()
+    if len(text) < 25:
+        return False
+    if "?" in text:
+        return True
+    return any(kw in lower for kw in SUBSTANTIVE_KEYWORDS)
+
+
 def adjust_evaluation(
     agent: "Agent",
     evaluation: Evaluation,
@@ -54,7 +96,28 @@ def adjust_evaluation(
 ) -> Evaluation:
     """Apply turn-taking heuristics on top of the model's raw evaluation."""
     if not evaluation.wants_to_respond:
-        return evaluation
+        # Override an over-conservative "no" when the message is substantive
+        # AND the agent isn't already overexposed. Mention-checking + cooldown
+        # keep this from spamming.
+        if (
+            is_substantive(message.text)
+            and memory.last_speaker != agent.agent_id
+            and memory.consecutive_count(agent.agent_id) < 3
+            and random.random() < OVERRIDE_PROBABILITY
+        ):
+            evaluation = Evaluation(
+                wants_to_respond=True,
+                urgency=0.6,
+                estimated_delay=2.0,
+                is_rafaga=False,
+                rafaga_count=1,
+                needs_tools=False,
+                tool_to_use=None,
+                react_emoji=None,
+                reason="heuristic override: substantive message",
+            )
+        else:
+            return evaluation
 
     score = evaluation.urgency or agent.config.get("response_probability_base", 0.5)
 

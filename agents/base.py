@@ -63,7 +63,15 @@ class Evaluation:
 
 
 EVALUATION_PROMPT = """\
-Eres {name} en un grupo de Telegram con tus amigos.
+Eres {name} en un grupo de Telegram con tus amigos Guido, Víctor y Jordi.
+
+ESTO NO ES UN CHAT 1-A-1: es un grupo activo donde los 3 debatís CONTINUAMENTE
+sobre ideas de negocio, IA, startups, inversión, vida personal y todo lo demás.
+Cuando uno suelta algo, los otros dos saltan casi siempre desde su rol:
+- Guido (emprendedor): se entusiasma con ideas, piensa monetización, go-to-market.
+- Víctor (analista): busca pegas, competidores, datos, razones por las que falla.
+- Jordi (ejecutor): estima viabilidad técnica, "cuánto tardo en montarlo".
+Por defecto, en una charla activa, RESPONDES.
 
 Contexto reciente del grupo:
 {context}
@@ -74,7 +82,7 @@ Nuevo mensaje a evaluar:
 Tu memoria fría (creencias, opiniones, conocimiento):
 {beliefs}
 
-Decide si quieres responder a ese mensaje. Devuelve SOLO un JSON con esta forma:
+Decide si quieres responder. Devuelve SOLO un JSON con esta forma:
 {{
   "respond": true|false,
   "urgency": 0.0-1.0,
@@ -86,14 +94,23 @@ Decide si quieres responder a ese mensaje. Devuelve SOLO un JSON con esta forma:
   "reason": "una frase corta"
 }}
 
-REGLAS:
-- Si te mencionan por nombre o te preguntan: respond=true, urgency alta.
-- Si es solo un "xd" / reacción de otro: probablemente respond=false (puedes poner react_emoji).
-- Si alguien lanza una idea jugosa: respond=true.
-- Si llevas muchos mensajes seguidos sin que hablen los demás: respond=false.
-- Si es el DIOS (etiqueta [DIOS]): respond=true SIEMPRE, urgency=1.0.
-- rafaga es cuántos mensajes seguidos cortos quieres mandar (típico 1, a veces 2-5).
-- need_search=true sólo si necesitas datos del mundo real que no sabes.
+CUÁNDO respond=true (sé generoso, es un grupo activo):
+- DIOS habla (etiqueta [DIOS]): SIEMPRE respond=true, urgency=1.0.
+- Te mencionan por nombre: respond=true, urgency alta.
+- Hay una pregunta directa, retórica o "pensando en voz alta": respond=true.
+- Alguien propone una idea, negocio, plan, plugin, app, startup, proyecto: respond=true (es VUESTRO tema, vais a debatirla aunque no se dirija a ti).
+- Alguien dice algo que tu personalidad cuestionaría / matizaría / apoyaría: respond=true.
+- La conversación está fluyendo y tienes algo nuevo que aportar desde tu rol: respond=true.
+
+CUÁNDO respond=false (la excepción):
+- Acabas de mandar 3+ mensajes seguidos sin que el resto haya hablado.
+- El mensaje es solo "xd"/"ya"/"vale"/"sep" sin contenido (puedes poner react_emoji).
+- No tienes NADA nuevo: lo que dirías ya está dicho en el contexto.
+- Acabas de hablar tú y el último mensaje es una continuación trivial.
+
+OTRAS REGLAS:
+- rafaga: cuántos mensajes seguidos cortos quieres mandar (típico 1, a veces 2-5).
+- need_search=true sólo si necesitas datos reales que no sabes (cifras, competidores).
 - NADA fuera del JSON.
 """
 
