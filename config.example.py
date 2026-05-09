@@ -30,7 +30,10 @@ MODEL_DEEP = "claude-sonnet-4-20250514"
 # === Cost / safety limits ===
 MAX_SPONTANEOUS_CONVOS_PER_DAY = 3
 MAX_MESSAGES_PER_CONVO = 25
-MAX_DAILY_API_CALLS = 300
+# Each bot turn consumes roughly 3 Haiku calls (2 evaluations from the
+# non-sender bots + 1 generation). 1000 covers ~10 conversations of 25 msgs,
+# leaving plenty of headroom for spontaneous chats and belief updates.
+MAX_DAILY_API_CALLS = 1000
 SPONTANEOUS_MSG_BUDGET = 20
 
 # === Timing (seconds) ===

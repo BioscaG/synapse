@@ -3,15 +3,27 @@
 For every incoming message:
 
 1. Push it into hot memory.
-2. If it comes from the human god, run god-mode special handling and force
-   priority 1.0 on every agent.
-3. Otherwise: the two non-sender agents evaluate in *parallel* (asyncio.gather).
-4. Apply turn-taking heuristics to each evaluation.
-5. Schedule each agent's response as a separate asyncio task that waits for
-   its delay, optionally invokes a tool, generates the burst and sends it.
+2. If it comes from the human god, run god-mode special handling (intent
+   detection for ``stop`` / ``summary`` / ``brainstorm``) and forward to
+   :meth:`_dispatch` with priority forced to 1.0.
+3. Otherwise call :meth:`_dispatch` directly.
 
-The manager also exposes ``deliver_burst`` so the spontaneous scheduler can
-push messages without going through the eval/generate cycle.
+:meth:`_dispatch` is the heart of turn-taking:
+
+- Evaluate (in parallel) every non-sender agent on the new message.
+- Apply turn-taking heuristics.
+- Pick **one** winner (highest urgency, lowest delay) and schedule its
+  response.
+
+When that response is delivered, :meth:`deliver_burst` calls :meth:`_dispatch`
+again on the bot's *own* last message — re-evaluating the **other** two
+agents. This produces an organic chain: each bot sees what the previous one
+just said and decides whether to chime in. The chain stops naturally when
+nobody wants to respond, when ``_can_continue_conversation`` says so (silence,
+message cap, daily API cap), or when the user (god) interjects.
+
+The manager also exposes :meth:`deliver_burst` so the spontaneous scheduler
+can push opening messages without going through the eval cycle.
 """
 
 from __future__ import annotations
@@ -88,44 +100,10 @@ class ConversationManager:
             await self._handle_god(message)
             return
 
-        if self.is_silenced():
+        if not self._can_continue_conversation():
             return
 
-        if self._convo_message_count >= self.config.max_messages_per_convo:
-            log.info("Bot quota for this conversation reached, agents will calm down")
-            return
-
-        if not self._can_call_api():
-            return
-
-        # Reset other agents' streaks, increment streak of sender
-        for agent in self.agents.values():
-            if agent.agent_id == message.sender_id:
-                agent.consecutive_msgs += 1
-            else:
-                agent.reset_streak()
-
-        # Evaluate in parallel with the two NON-SENDER agents.
-        evaluators = [a for a in self.agents.values() if a.agent_id != message.sender_id]
-        results = await asyncio.gather(
-            *(a.evaluate_message(self.client, self.config.model_fast, message, self.memory) for a in evaluators),
-            return_exceptions=True,
-        )
-
-        scheduled = 0
-        for agent, evaluation in zip(evaluators, results):
-            if isinstance(evaluation, BaseException):
-                log.warning("Evaluation crashed for %s: %s", agent.agent_id, evaluation)
-                continue
-            evaluation = adjust_evaluation(agent, evaluation, message, self.memory)
-            if not evaluation.wants_to_respond:
-                if evaluation.react_emoji and self._react and message.telegram_message_id:
-                    await self._react(agent.agent_id, message.telegram_message_id, evaluation.react_emoji)
-                continue
-            self._schedule_response(agent, evaluation)
-            scheduled += 1
-
-        log.debug("Scheduled %d response(s) for message from %s", scheduled, message.sender_id)
+        await self._dispatch(message)
 
     async def deliver_burst(
         self,
@@ -133,7 +111,13 @@ class ConversationManager:
         messages: list[str],
         reply_to_message_id: int | None = None,
     ) -> None:
-        """Send a pre-generated burst of messages from ``agent``."""
+        """Send a pre-generated burst of messages from ``agent``.
+
+        After the burst lands, re-dispatch the conversation so the *other*
+        agents can react to what was just said. This is how the chain stays
+        alive without firing every bot in parallel on the original message.
+        """
+        last_msg: GroupMessage | None = None
         for i, text in enumerate(messages):
             if not text:
                 continue
@@ -141,16 +125,21 @@ class ConversationManager:
                 lo, hi = self.config.burst_inter_delay
                 await asyncio.sleep(random.uniform(lo, hi))
             await self._typing_for(agent.agent_id)
-            telegram_id = await self._send(agent.agent_id, text, reply_to_message_id if i == 0 else None)
-            self.memory.push_message(
-                GroupMessage(
-                    sender_id=agent.agent_id,
-                    sender_name=agent.name,
-                    text=text,
-                    telegram_message_id=telegram_id,
-                )
+            telegram_id = await self._send(
+                agent.agent_id, text, reply_to_message_id if i == 0 else None
             )
+            last_msg = GroupMessage(
+                sender_id=agent.agent_id,
+                sender_name=agent.name,
+                text=text,
+                telegram_message_id=telegram_id,
+            )
+            self.memory.push_message(last_msg)
+            self._convo_message_count += 1
             agent.last_msg_time = time.time()
+
+        if last_msg and self._can_continue_conversation():
+            await self._dispatch(last_msg)
 
     # ------------------------------------------------------------------ god-mode
     async def _handle_god(self, message: GroupMessage) -> None:
@@ -166,48 +155,11 @@ class ConversationManager:
             await self._handle_summary_request(message)
             return
 
-        # Reset silence on any other god message.
+        # Reset silence/quota on any other god message — the user is alive.
         self._silenced_until = 0.0
         self._convo_message_count = 1
-
-        # Brainstorm: nudge agents toward tool use & deep model in their generation.
         force_deep = intent.kind == "brainstorm"
-
-        evaluators = list(self.agents.values())
-        results = await asyncio.gather(
-            *(a.evaluate_message(self.client, self.config.model_fast, message, self.memory) for a in evaluators),
-            return_exceptions=True,
-        )
-
-        # All three answer the god. Order them by delay so the earliest one
-        # may add the "ostia el jefe"-style intro.
-        ordered: list[tuple[Agent, Evaluation]] = []
-        for agent, evaluation in zip(evaluators, results):
-            if isinstance(evaluation, BaseException):
-                log.warning("God-mode eval crashed for %s: %s", agent.agent_id, evaluation)
-                continue
-            adjusted = adjust_evaluation(
-                agent,
-                Evaluation(
-                    wants_to_respond=True,
-                    urgency=1.0,
-                    estimated_delay=max(0.5, evaluation.estimated_delay),
-                    is_rafaga=evaluation.is_rafaga,
-                    rafaga_count=evaluation.rafaga_count,
-                    needs_tools=evaluation.needs_tools or force_deep,
-                    tool_to_use=evaluation.tool_to_use,
-                    react_emoji=None,
-                    reason="god priority",
-                ),
-                message,
-                self.memory,
-            )
-            if adjusted.wants_to_respond:
-                ordered.append((agent, adjusted))
-
-        ordered.sort(key=lambda pair: pair[1].estimated_delay)
-        for agent, evaluation in ordered:
-            self._schedule_response(agent, evaluation, force_deep=force_deep)
+        await self._dispatch(message, force_priority=True, force_deep=force_deep)
 
     async def _handle_summary_request(self, message: GroupMessage) -> None:
         from tools.doc_generator import build_summary
@@ -219,8 +171,82 @@ class ConversationManager:
         agent = self.agents[spokesperson_id]
         await self.deliver_burst(agent, [text], reply_to_message_id=message.telegram_message_id)
 
+    # ------------------------------------------------------------------ dispatch
+    async def _dispatch(
+        self,
+        message: GroupMessage,
+        *,
+        force_priority: bool = False,
+        force_deep: bool = False,
+    ) -> None:
+        """Pick the most eager non-sender agent and schedule its response.
+
+        ``force_priority`` is set when the message comes from god (or any
+        message we want to guarantee gets answered): every evaluator's
+        ``wants_to_respond`` is forced to ``True`` and ``urgency`` to 1.0
+        before applying the turn-taking heuristics.
+        """
+        evaluators = [a for a in self.agents.values() if a.agent_id != message.sender_id]
+        if not evaluators:
+            return
+
+        raw_evals = await asyncio.gather(
+            *(
+                a.evaluate_message(self.client, self.config.model_fast, message, self.memory)
+                for a in evaluators
+            ),
+            return_exceptions=True,
+        )
+
+        candidates: list[tuple[Agent, Evaluation]] = []
+        for agent, raw in zip(evaluators, raw_evals):
+            if isinstance(raw, BaseException):
+                log.warning("Eval crashed for %s: %s", agent.agent_id, raw)
+                continue
+
+            seed = raw
+            if force_priority:
+                seed = Evaluation(
+                    wants_to_respond=True,
+                    urgency=1.0,
+                    estimated_delay=max(0.5, raw.estimated_delay),
+                    is_rafaga=raw.is_rafaga,
+                    rafaga_count=raw.rafaga_count,
+                    needs_tools=raw.needs_tools or force_deep,
+                    tool_to_use=raw.tool_to_use,
+                    react_emoji=None,
+                    reason="god priority",
+                )
+
+            adjusted = adjust_evaluation(agent, seed, message, self.memory)
+            if adjusted.wants_to_respond:
+                candidates.append((agent, adjusted))
+            elif adjusted.react_emoji and self._react and message.telegram_message_id:
+                await self._react(
+                    agent.agent_id, message.telegram_message_id, adjusted.react_emoji
+                )
+
+        if not candidates:
+            log.debug("Nobody wants to respond to %s", message.sender_id)
+            return
+
+        # Highest urgency wins; ties broken by shorter delay.
+        candidates.sort(key=lambda pair: (-pair[1].urgency, pair[1].estimated_delay))
+        chosen_agent, chosen_eval = candidates[0]
+        runners_up = [c[0].agent_id for c in candidates[1:]] or "none"
+        log.info(
+            "Dispatch: %s wins (urgency=%.2f, delay=%.1fs) over %s",
+            chosen_agent.agent_id,
+            chosen_eval.urgency,
+            chosen_eval.estimated_delay,
+            runners_up,
+        )
+        self._schedule_response(chosen_agent, chosen_eval, force_deep=force_deep)
+
     # ------------------------------------------------------------------ scheduling
-    def _schedule_response(self, agent: Agent, evaluation: Evaluation, *, force_deep: bool = False) -> None:
+    def _schedule_response(
+        self, agent: Agent, evaluation: Evaluation, *, force_deep: bool = False
+    ) -> None:
         log.info(
             "Scheduling %s in %.1fs (urgency=%.2f, burst=%s, tool=%s)",
             agent.agent_id,
@@ -233,7 +259,9 @@ class ConversationManager:
         self._pending_tasks.add(task)
         task.add_done_callback(self._pending_tasks.discard)
 
-    async def _run_response(self, agent: Agent, evaluation: Evaluation, *, force_deep: bool = False) -> None:
+    async def _run_response(
+        self, agent: Agent, evaluation: Evaluation, *, force_deep: bool = False
+    ) -> None:
         try:
             await asyncio.sleep(max(0.0, evaluation.estimated_delay))
             if self.is_silenced():
@@ -294,6 +322,18 @@ class ConversationManager:
             log.warning("Daily API call cap reached (%d)", usage["api_calls"])
             return False
         return True
+
+    def _can_continue_conversation(self) -> bool:
+        """True if the chain may continue: not silenced, under message cap, under API cap."""
+        if self.is_silenced():
+            return False
+        if self._convo_message_count >= self.config.max_messages_per_convo:
+            log.info(
+                "Conversation cap reached (%d msgs) — chain stops",
+                self._convo_message_count,
+            )
+            return False
+        return self._can_call_api()
 
     # ------------------------------------------------------------------ background maintenance
     async def maybe_summarise_dead_conversation(self) -> None:
