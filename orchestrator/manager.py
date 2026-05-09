@@ -221,6 +221,14 @@ class ConversationManager:
 
     # ------------------------------------------------------------------ scheduling
     def _schedule_response(self, agent: Agent, evaluation: Evaluation, *, force_deep: bool = False) -> None:
+        log.info(
+            "Scheduling %s in %.1fs (urgency=%.2f, burst=%s, tool=%s)",
+            agent.agent_id,
+            evaluation.estimated_delay,
+            evaluation.urgency,
+            evaluation.rafaga_count,
+            evaluation.tool_to_use,
+        )
         task = asyncio.create_task(self._run_response(agent, evaluation, force_deep=force_deep))
         self._pending_tasks.add(task)
         task.add_done_callback(self._pending_tasks.discard)
@@ -229,6 +237,7 @@ class ConversationManager:
         try:
             await asyncio.sleep(max(0.0, evaluation.estimated_delay))
             if self.is_silenced():
+                log.info("%s skipped: bots silenced", agent.agent_id)
                 return
 
             tool_results: str | None = None
@@ -240,6 +249,7 @@ class ConversationManager:
             burst = decide_burst(agent, evaluation)
             burst = min(burst, agent.config.get("max_consecutive", 5))
             model = self.config.model_deep if use_deep else self.config.model_fast
+            log.info("%s generating (model=%s, burst=%d)", agent.agent_id, model, burst)
             messages = await agent.generate_response(
                 client=self.client,
                 model=model,
@@ -248,7 +258,9 @@ class ConversationManager:
                 tool_results=tool_results,
             )
             if not messages:
+                log.warning("%s generated no messages — check API logs above", agent.agent_id)
                 return
+            log.info("%s sending %d message(s)", agent.agent_id, len(messages))
             await self.deliver_burst(agent, messages)
         except asyncio.CancelledError:
             raise
