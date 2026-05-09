@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import random
 from datetime import datetime
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 

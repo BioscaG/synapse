@@ -29,7 +29,7 @@ from anthropic import AsyncAnthropic
 from agents.base import Agent, Evaluation
 from memory.manager import GroupMessage, MemoryManager
 from memory.summarizer import BeliefSummariser
-from orchestrator.god_mode import GodIntent, detect_intent
+from orchestrator.god_mode import detect_intent
 from orchestrator.turns import adjust_evaluation, decide_burst
 from tools.registry import ToolRegistry
 
