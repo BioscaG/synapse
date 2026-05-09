@@ -13,6 +13,16 @@ Two LLM calls per turn:
 2. ``generate_response`` — Haiku for normal replies, Sonnet when a tool was
    used. Returns a list of short Spanish messages (1 for a single reply,
    2-5 for a burst).
+
+Prompt caching
+--------------
+Both calls split their prompts so the *static* portion (rules + persona) is
+sent in the ``system`` parameter with ``cache_control``. The dynamic portion
+(context, beliefs, banned phrases, new message) goes in the user message
+without caching. With Anthropic's ephemeral cache the static block is paid
+in full only on the first call within ~5 minutes; subsequent calls cost ~10%
+of the input tokens. For our agents the static block is ~700-1500 tokens,
+so the savings are large.
 """
 
 from __future__ import annotations
@@ -62,7 +72,11 @@ class Evaluation:
         )
 
 
-EVALUATION_PROMPT = """\
+# --------------------------------------------------------------------------- prompts
+# Static part of the evaluation prompt — cached. Beliefs are intentionally
+# *not* included here: they don't help the "should I respond?" decision and
+# they would bloat every evaluation call.
+EVALUATION_SYSTEM_TEMPLATE = """\
 Eres {name} en un grupo de Telegram con tus amigos Guido, Víctor y Jordi.
 
 ESTO NO ES UN CHAT 1-A-1: es un grupo activo donde los 3 debatís CONTINUAMENTE
@@ -73,20 +87,11 @@ Cuando uno suelta algo, los otros dos saltan casi siempre desde su rol:
 - Jordi (ejecutor): estima viabilidad técnica, "cuánto tardo en montarlo".
 Por defecto, en una charla activa, RESPONDES.
 
-Contexto reciente del grupo:
-{context}
-
-Nuevo mensaje a evaluar:
-{new_message}
-
-Tu memoria fría (creencias, opiniones, conocimiento):
-{beliefs}
-
-Decide si quieres responder. Devuelve SOLO un JSON con esta forma:
+Tu tarea: decidir si quieres responder al último mensaje. Devuelve SOLO un JSON con esta forma:
 {{
   "respond": true|false,
   "urgency": 0.0-1.0,
-  "delay_seconds": <int>,
+  "delay_seconds": <int 1-15>,
   "rafaga": <int 1-5>,
   "need_search": true|false,
   "tool": null|"web_search"|"market_analysis"|"tech_estimator",
@@ -94,7 +99,7 @@ Decide si quieres responder. Devuelve SOLO un JSON con esta forma:
   "reason": "una frase corta"
 }}
 
-CUÁNDO respond=true (sé generoso, es un grupo activo):
+CUÁNDO respond=true (sé generoso):
 - DIOS habla (etiqueta [DIOS]): SIEMPRE respond=true, urgency=1.0.
 - Te mencionan por nombre: respond=true, urgency alta.
 - Hay una pregunta directa, retórica o "pensando en voz alta": respond=true.
@@ -105,63 +110,56 @@ CUÁNDO respond=true (sé generoso, es un grupo activo):
 CUÁNDO respond=false (la excepción):
 - Acabas de mandar 3+ mensajes seguidos sin que el resto haya hablado.
 - El mensaje es solo "xd"/"ya"/"vale"/"sep" sin contenido (puedes poner react_emoji).
-- No tienes NADA nuevo: lo que dirías ya está dicho en el contexto.
+- No tienes NADA nuevo que añadir: lo que dirías ya está dicho en el contexto.
 - Acabas de hablar tú y el último mensaje es una continuación trivial.
 
 OTRAS REGLAS:
 - rafaga: cuántos mensajes seguidos cortos quieres mandar (típico 1, a veces 2-5).
 - need_search=true sólo si necesitas datos reales que no sabes (cifras, competidores).
+- delay_seconds entre 1 y 15. Más rápido si te mencionan o es DIOS.
 - NADA fuera del JSON.
 """
 
 
-GENERATION_PROMPT = """\
-{system_prompt}
-
-Contexto del grupo (últimos mensajes, en orden):
-{context}
-
-Tu memoria fría:
-{beliefs}
-
-{tool_section}
-
-Responde con tu siguiente intervención en el grupo. Reglas:
-- Mensajes CORTOS, estilo WhatsApp (1-2 líneas como máx).
-- Devuelve un JSON array de strings: ["msg1", "msg2", ...] (1 a {max_msgs} elementos).
-- Si vas a mandar varios, son ráfaga: cada uno es una idea suelta.
+# Static part of the generation prompt — cached together with the agent persona.
+GENERATION_SYSTEM_RULES = """\
+Vas a generar tu siguiente intervención en el grupo de Telegram. Reglas:
+- Mensajes CORTOS, estilo WhatsApp (1-2 líneas como máx por mensaje).
+- Devuelve un JSON array de strings: ["msg1", "msg2", ...].
+- Si vas a mandar varios, son una ráfaga: cada uno es una idea suelta.
 - Usa TUS muletillas y errores ortográficos típicos.
 - NUNCA escribas "jajaja" — usa la variante de risa que te corresponde.
 - NO repitas frases que ya estén en el contexto.
 - SOLO el JSON array, nada más fuera.
 """
 
-SPONTANEOUS_PROMPT = """\
-{system_prompt}
 
-Son las {hour:02d}:00 del {weekday}. Estás en tu grupo de Telegram con tus amigos.
-Llevas un rato sin hablar y te apetece soltar algo.
-
-Tu memoria fría:
-{beliefs}
-
-Temas pendientes de conversaciones anteriores:
-{pending}
-
-{trigger_section}
-
-Escribe TU primer mensaje al grupo para iniciar la conversación. Algo natural que dirías tú:
-una idea, una pregunta, algo gracioso, un follow-up, una noticia que has visto…
+# Static part of the spontaneous prompt — cached with persona.
+SPONTANEOUS_SYSTEM_RULES = """\
+Vas a iniciar una conversación nueva en el grupo. Llevas un rato sin hablar y te apetece soltar algo
+natural: una idea, una pregunta, algo gracioso, un follow-up, una noticia que has visto…
 
 Devuelve SOLO un JSON con esta forma:
-{{
+{
   "topic": "tema en una frase",
   "messages": ["msg1", "msg2", ...]
-}}
+}
 1 a 3 mensajes para iniciar. Estilo WhatsApp, corto, en español.
 """
 
 
+# --------------------------------------------------------------------------- helpers
+def _cache_block(text: str) -> dict:
+    return {"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}
+
+
+def _record_usage(memory: "MemoryManager", response) -> None:
+    """Track output tokens (input is amortised by caching). Best-effort."""
+    out = getattr(response.usage, "output_tokens", 0) or 0
+    memory.record_api_call(int(out))
+
+
+# --------------------------------------------------------------------------- Agent
 @dataclass
 class Agent:
     """A single bot personality."""
@@ -200,22 +198,26 @@ class Agent:
         if message.sender_id == self.agent_id:
             return Evaluation.silent("self message")
 
-        prompt = EVALUATION_PROMPT.format(
-            name=self.name,
-            context=memory.format_context(15),
-            new_message=self._format_message(message),
-            beliefs=memory.format_beliefs(self.agent_id),
+        system_blocks = [_cache_block(EVALUATION_SYSTEM_TEMPLATE.format(name=self.name))]
+        user_payload = (
+            "Contexto reciente del grupo:\n"
+            f"{memory.format_context(10)}\n\n"
+            "Nuevo mensaje a evaluar:\n"
+            f"{self._format_message(message)}\n\n"
+            "Decide y devuelve SOLO el JSON."
         )
+
         try:
             response = await client.messages.create(
                 model=model,
                 max_tokens=180,
-                messages=[{"role": "user", "content": prompt}],
+                system=system_blocks,
+                messages=[{"role": "user", "content": user_payload}],
             )
         except Exception:
             log.exception("Evaluation API call failed for %s", self.agent_id)
             return Evaluation.silent("api error")
-        memory.record_api_call(getattr(response.usage, "output_tokens", 0))
+        _record_usage(memory, response)
 
         text = response.content[0].text if response.content else ""
         try:
@@ -245,27 +247,43 @@ class Agent:
         tool_results: str | None = None,
     ) -> list[str]:
         """Ask the model for the next 1..max_msgs messages this agent will send."""
+        system_blocks = [
+            _cache_block(self.system_prompt),
+            _cache_block(GENERATION_SYSTEM_RULES),
+        ]
+
+        banned = memory.get_overused_phrases(self.agent_id)
+        banned_section = ""
+        if banned:
+            banned_section = (
+                "EVITA estas frases que has usado mucho últimamente "
+                "(busca otra forma de decirlo):\n"
+                + "\n".join(f"- {p}" for p in banned)
+                + "\n\n"
+            )
+
         tool_section = ""
         if tool_results:
-            tool_section = f"Has buscado info y has encontrado:\n{tool_results}\n"
+            tool_section = f"Has buscado info y has encontrado:\n{tool_results}\n\n"
 
-        prompt = GENERATION_PROMPT.format(
-            system_prompt=self.system_prompt,
-            context=memory.format_context(15),
-            beliefs=memory.format_beliefs(self.agent_id),
-            tool_section=tool_section,
-            max_msgs=max_msgs,
+        user_payload = (
+            f"Tu memoria fría:\n{memory.format_beliefs(self.agent_id)}\n\n"
+            f"Contexto del grupo (últimos mensajes, en orden):\n{memory.format_context(15)}\n\n"
+            f"{banned_section}{tool_section}"
+            f"Devuelve un JSON array de 1 a {max_msgs} mensajes cortos en español."
         )
+
         try:
             response = await client.messages.create(
                 model=model,
                 max_tokens=600,
-                messages=[{"role": "user", "content": prompt}],
+                system=system_blocks,
+                messages=[{"role": "user", "content": user_payload}],
             )
         except Exception:
             log.exception("Generation API call failed for %s", self.agent_id)
             return []
-        memory.record_api_call(getattr(response.usage, "output_tokens", 0))
+        _record_usage(memory, response)
 
         text = response.content[0].text if response.content else ""
         messages = _parse_messages(text, max_msgs)
@@ -294,24 +312,29 @@ class Agent:
         else:
             trigger_section = "Trigger: random_thought (suelta lo que se te ocurra)."
 
-        prompt = SPONTANEOUS_PROMPT.format(
-            system_prompt=self.system_prompt,
-            hour=hour,
-            weekday=weekday,
-            beliefs=memory.format_beliefs(self.agent_id),
-            pending=pending_text,
-            trigger_section=trigger_section,
+        system_blocks = [
+            _cache_block(self.system_prompt),
+            _cache_block(SPONTANEOUS_SYSTEM_RULES),
+        ]
+        user_payload = (
+            f"Son las {hour:02d}:00 del {weekday}.\n\n"
+            f"Tu memoria fría:\n{memory.format_beliefs(self.agent_id)}\n\n"
+            f"Temas pendientes de conversaciones anteriores:\n{pending_text}\n\n"
+            f"{trigger_section}\n\n"
+            "Escribe TU primer mensaje para iniciar la conversación. Devuelve SOLO el JSON."
         )
+
         try:
             response = await client.messages.create(
                 model=model,
                 max_tokens=400,
-                messages=[{"role": "user", "content": prompt}],
+                system=system_blocks,
+                messages=[{"role": "user", "content": user_payload}],
             )
         except Exception:
             log.exception("Spontaneous API call failed for %s", self.agent_id)
             return None
-        memory.record_api_call(getattr(response.usage, "output_tokens", 0))
+        _record_usage(memory, response)
 
         text = response.content[0].text if response.content else ""
         try:

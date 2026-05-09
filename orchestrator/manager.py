@@ -42,6 +42,7 @@ from agents.base import Agent, Evaluation
 from memory.manager import GroupMessage, MemoryManager
 from memory.summarizer import BeliefSummariser
 from orchestrator.god_mode import detect_intent
+from orchestrator.tuner import StyleTuner
 from orchestrator.turns import adjust_evaluation, decide_burst
 from tools.registry import ToolRegistry
 
@@ -58,6 +59,10 @@ class ManagerConfig:
     max_messages_per_convo: int
     burst_inter_delay: tuple[float, float]
     conversation_timeout_seconds: int = 300
+    # If god speaks after more than this many seconds of silence, the hot
+    # context is wiped before processing the new message — otherwise the bots
+    # bring up the previous conversation as if it were still going.
+    stale_gap_seconds: int = 120
 
 
 class ConversationManager:
@@ -83,6 +88,7 @@ class ConversationManager:
         self._typing = typing_callback
         self.tools = tool_registry or ToolRegistry(client=client, model=config.model_deep)
         self.summariser = BeliefSummariser(client=client, memory=memory, model=config.model_fast)
+        self.tuner = StyleTuner(memory=memory)
 
         self._silenced_until: float = 0.0
         self._convo_message_count: int = 0
@@ -92,6 +98,13 @@ class ConversationManager:
 
     # ------------------------------------------------------------------ public API
     async def handle_message(self, message: GroupMessage) -> None:
+        # If god speaks after a long pause, the previous conversation is
+        # effectively over. Wipe the hot context so the bots don't reply as
+        # if the old thread were still alive.
+        if message.is_from_god and self._is_conversation_stale():
+            log.info("Stale context detected before god message — flushing")
+            await self._flush_stale_conversation()
+
         self.memory.push_message(message)
         self._last_activity_at = datetime.utcnow()
         self._convo_message_count += 1
@@ -335,6 +348,35 @@ class ConversationManager:
             return False
         return self._can_call_api()
 
+    def _is_conversation_stale(self) -> bool:
+        """True if too much time passed since the last message to keep the context."""
+        if not self._last_activity_at:
+            return False
+        if not self.memory.hot_messages(1):
+            return False
+        elapsed = (datetime.utcnow() - self._last_activity_at).total_seconds()
+        return elapsed >= self.config.stale_gap_seconds
+
+    async def _flush_stale_conversation(self) -> None:
+        """Summarise the prior conversation in the background and clear hot context."""
+        old_messages = self.memory.hot_messages(40)
+        self.memory.clear_hot()
+        self._convo_message_count = 0
+        self._last_activity_at = None
+        self._cancel_pending()
+        if old_messages:
+            asyncio.create_task(self._post_conversation_maintenance(old_messages))
+
+    async def _post_conversation_maintenance(self, messages: list[GroupMessage]) -> None:
+        """Summarise beliefs, then re-tune banned phrases — runs off the hot path."""
+        try:
+            async with self._summary_lock:
+                for agent in self.agents.values():
+                    await self.summariser.update_for_agent(agent.agent_id, agent.name, messages)
+                self.tuner.run_for_all(self.agents.keys())
+        except Exception:
+            log.exception("Post-conversation maintenance failed")
+
     # ------------------------------------------------------------------ background maintenance
     async def maybe_summarise_dead_conversation(self) -> None:
         """If the conversation has been quiet for ``conversation_timeout``, summarise it."""
@@ -350,5 +392,7 @@ class ConversationManager:
             messages = self.memory.hot_messages(40)
             for agent in self.agents.values():
                 await self.summariser.update_for_agent(agent.agent_id, agent.name, messages)
+            self.tuner.run_for_all(self.agents.keys())
+            self.memory.clear_hot()
             self._convo_message_count = 0
             self._last_activity_at = None

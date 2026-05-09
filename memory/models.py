@@ -1,11 +1,17 @@
 """SQLite schema for the memory layer.
 
-The schema follows the spec in ``RIALS_README.md``:
+The schema follows the spec in ``RIALS_README.md`` plus the StyleTuner
+extension:
 
 - ``beliefs``: per-agent cold memory (opinions, knowledge, relationships).
 - ``ideas``: shared idea board across the three agents.
 - ``conversations``: short summaries of past conversations (NOT full message logs).
 - ``daily_usage``: per-day counters for cost / safety limits.
+- ``agent_messages``: rolling log of bot-emitted messages, used by the
+  StyleTuner to detect overused phrases across conversations.
+- ``style_feedback``: per-agent list of phrases the StyleTuner has flagged as
+  overused. The generation prompt reads this list and asks the agent to vary
+  its phrasing.
 """
 
 from __future__ import annotations
@@ -61,6 +67,26 @@ CREATE TABLE IF NOT EXISTS daily_usage (
     tokens_used INTEGER NOT NULL DEFAULT 0,
     spontaneous_convos INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS agent_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_messages_agent ON agent_messages(agent_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS style_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL,
+    phrase TEXT NOT NULL,
+    occurrences INTEGER NOT NULL DEFAULT 1,
+    detected_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(agent_id, phrase)
+);
+
+CREATE INDEX IF NOT EXISTS idx_style_feedback_agent ON style_feedback(agent_id);
 """
 
 

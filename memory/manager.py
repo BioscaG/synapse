@@ -90,6 +90,14 @@ class MemoryManager:
     # ------------------------------------------------------------------ hot memory
     def push_message(self, message: GroupMessage) -> None:
         self._hot.append(message)
+        # Persist bot messages so the StyleTuner can analyse them across
+        # conversations. God messages stay RAM-only by design (the spec).
+        if not message.is_from_god and message.sender_id in {"guido", "victor", "jordi"}:
+            self._record_agent_message(message.sender_id, message.text)
+
+    def clear_hot(self) -> None:
+        """Empty the in-RAM context window (used when starting a new topic)."""
+        self._hot.clear()
 
     def hot_messages(self, n: int = 15) -> list[GroupMessage]:
         if n >= len(self._hot):
@@ -348,3 +356,63 @@ class MemoryManager:
             "tokens_used": row["tokens_used"],
             "spontaneous_convos": row["spontaneous_convos"],
         }
+
+    # ------------------------------------------------------------------ tuner: agent message log
+    def _record_agent_message(self, agent_id: str, text: str, max_keep: int = 800) -> None:
+        """Persist a bot-emitted message and trim the per-agent log."""
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO agent_messages (agent_id, text) VALUES (?, ?)",
+                (agent_id, text),
+            )
+            # Keep only the last `max_keep` messages per agent.
+            conn.execute(
+                """
+                DELETE FROM agent_messages
+                WHERE agent_id = ?
+                  AND id NOT IN (
+                    SELECT id FROM agent_messages
+                    WHERE agent_id = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                  )
+                """,
+                (agent_id, agent_id, max_keep),
+            )
+            conn.commit()
+
+    def get_recent_agent_messages(self, agent_id: str, limit: int = 100) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT text FROM agent_messages WHERE agent_id = ? ORDER BY id DESC LIMIT ?",
+                (agent_id, limit),
+            ).fetchall()
+        return [row["text"] for row in rows]
+
+    # ------------------------------------------------------------------ tuner: style feedback
+    def set_overused_phrases(self, agent_id: str, phrases: Iterable[tuple[str, int]]) -> None:
+        """Replace the agent's banned-phrases list."""
+        phrases = list(phrases)
+        with self._connect() as conn:
+            conn.execute("DELETE FROM style_feedback WHERE agent_id = ?", (agent_id,))
+            for phrase, occurrences in phrases:
+                conn.execute(
+                    """
+                    INSERT INTO style_feedback (agent_id, phrase, occurrences)
+                    VALUES (?, ?, ?)
+                    """,
+                    (agent_id, phrase, int(occurrences)),
+                )
+            conn.commit()
+
+    def get_overused_phrases(self, agent_id: str) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT phrase FROM style_feedback
+                WHERE agent_id = ?
+                ORDER BY occurrences DESC, detected_at DESC
+                """,
+                (agent_id,),
+            ).fetchall()
+        return [row["phrase"] for row in rows]
