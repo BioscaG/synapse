@@ -104,6 +104,20 @@ class MemoryManager:
             return list(self._hot)
         return list(self._hot)[-n:]
 
+    def hot_size(self) -> int:
+        return len(self._hot)
+
+    def previous_speaker_excluding(self, sender_id: str) -> str | None:
+        """Walk hot memory backwards and return the first sender that is neither
+        ``sender_id`` nor god. Used to detect the implicit addressee of a question."""
+        for msg in reversed(self._hot):
+            if msg.sender_id == sender_id:
+                continue
+            if msg.is_from_god or msg.sender_id == "god":
+                continue
+            return msg.sender_id
+        return None
+
     def format_context(self, n: int = 15) -> str:
         """Render the last `n` messages for inclusion in a prompt."""
         lines = []

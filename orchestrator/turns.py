@@ -88,6 +88,10 @@ def is_substantive(text: str) -> bool:
     return any(kw in lower for kw in SUBSTANTIVE_KEYWORDS)
 
 
+EARLY_CONVERSATION_DEPTH = 6  # below this many hot messages, skip random silence
+SCORE_NOISE_RANGE = (0.0, 0.6)  # softer threshold than uniform(0,1): score >=0.6 always passes
+
+
 def adjust_evaluation(
     agent: "Agent",
     evaluation: Evaluation,
@@ -95,26 +99,40 @@ def adjust_evaluation(
     memory: "MemoryManager",
 ) -> Evaluation:
     """Apply turn-taking heuristics on top of the model's raw evaluation."""
+    is_question = "?" in message.text
+    implicit_addressee = (
+        memory.previous_speaker_excluding(message.sender_id) if is_question else None
+    )
+    is_implicitly_addressed = implicit_addressee == agent.agent_id
+
     if not evaluation.wants_to_respond:
-        # Override an over-conservative "no" when the message is substantive
-        # AND the agent isn't already overexposed. Mention-checking + cooldown
-        # keep this from spamming.
-        if (
-            is_substantive(message.text)
-            and memory.last_speaker != agent.agent_id
+        # Override the model's "no" when:
+        # - the message is substantive AND the agent isn't overexposed, OR
+        # - the agent is the implicit addressee of a question (e.g. "y q idea es???"
+        #   right after that agent mentioned having one).
+        should_override = (
+            memory.last_speaker != agent.agent_id
             and memory.consecutive_count(agent.agent_id) < 3
-            and random.random() < OVERRIDE_PROBABILITY
-        ):
+            and (
+                is_implicitly_addressed
+                or (is_substantive(message.text) and random.random() < OVERRIDE_PROBABILITY)
+            )
+        )
+        if should_override:
             evaluation = Evaluation(
                 wants_to_respond=True,
-                urgency=0.6,
-                estimated_delay=2.0,
+                urgency=0.85 if is_implicitly_addressed else 0.6,
+                estimated_delay=1.5 if is_implicitly_addressed else 2.0,
                 is_rafaga=False,
                 rafaga_count=1,
                 needs_tools=False,
                 tool_to_use=None,
                 react_emoji=None,
-                reason="heuristic override: substantive message",
+                reason=(
+                    "heuristic override: implicit addressee"
+                    if is_implicitly_addressed
+                    else "heuristic override: substantive message"
+                ),
             )
         else:
             return evaluation
@@ -125,7 +143,12 @@ def adjust_evaluation(
     if agent.name.lower() in text_lower or agent.agent_id in text_lower:
         score = max(score, agent.config.get("response_probability_mention", 0.95))
 
-    if "?" in message.text:
+    if is_implicitly_addressed:
+        # The previous-speaker-questioned signal is strong: someone is asking
+        # this agent specifically even without naming them.
+        score = max(score, 0.9)
+
+    if is_question:
         score += 0.15
 
     consecutive = memory.consecutive_count(agent.agent_id)
@@ -145,10 +168,16 @@ def adjust_evaluation(
     if message.is_from_god:
         score = 1.0
 
-    if random.random() < RANDOM_SILENCE_PROB and not message.is_from_god:
+    early_conversation = memory.hot_size() < EARLY_CONVERSATION_DEPTH
+    if (
+        random.random() < RANDOM_SILENCE_PROB
+        and not message.is_from_god
+        and not early_conversation
+        and not is_implicitly_addressed
+    ):
         return Evaluation.silent("random silence")
 
-    if score <= random.random():
+    if score <= random.uniform(*SCORE_NOISE_RANGE):
         return Evaluation.silent("score below threshold")
 
     delay = _calculate_delay(agent, evaluation, message)
