@@ -36,37 +36,12 @@ AVERAGE_GAP = {"guido": 4.1, "jordi": 4.6, "victor": 5.6}
 # realistic randomness so the bots are not always all triggered together.
 RANDOM_SILENCE_PROB = 0.10
 
-# Words that flag a message as "substantive group fodder": when present, the
-# heuristic will override a conservative ``respond=false`` from the model with
-# a coin flip, because in this group an idea/business/plan always sparks debate.
-SUBSTANTIVE_KEYWORDS = (
-    "idea",
-    "negocio",
-    "startup",
-    "plugin",
-    " app ",
-    " app?",
-    " app.",
-    "proyecto",
-    "monto",
-    "montar",
-    "monetiza",
-    "mercado",
-    "competencia",
-    "invert",
-    "invierto",
-    "inversi",
-    "ai ",
-    " ia ",
-    " ia,",
-    " ia.",
-    "modelo de",
-    "lanzar",
-    "vender",
-    "comprar",
-)
+# Probability of overriding the model's "no" when a message looks substantive.
+OVERRIDE_PROBABILITY = 0.80
 
-OVERRIDE_PROBABILITY = 0.65
+# Below this many messages in hot memory, every silent agent is force-included
+# at least once. Guarantees a minimum 3-4 turn conversation after god speaks.
+FRESH_CONVERSATION_DEPTH = 8
 
 
 def is_reaction_message(text: str) -> bool:
@@ -79,13 +54,19 @@ def is_reaction_message(text: str) -> bool:
 
 
 def is_substantive(text: str) -> bool:
-    """Heuristic: looks like content the group would naturally debate."""
-    lower = text.lower()
-    if len(text) < 25:
+    """Heuristic: longer-than-reaction messages are substantive in this group.
+
+    The previous keyword-list approach was too narrow — it missed messages
+    like "osea, automatizar respuestas a clientes, eso duele en el bolsillo"
+    just because they didn't contain the word "idea". In a brainstorming
+    group, anything with five+ words is something the others can build on.
+    """
+    stripped = text.strip()
+    if len(stripped) < 25:
         return False
-    if "?" in text:
+    if "?" in stripped:
         return True
-    return any(kw in lower for kw in SUBSTANTIVE_KEYWORDS)
+    return len(stripped.split()) >= 5
 
 
 EARLY_CONVERSATION_DEPTH = 6  # below this many hot messages, skip random silence
@@ -105,23 +86,39 @@ def adjust_evaluation(
     )
     is_implicitly_addressed = implicit_addressee == agent.agent_id
 
+    # Force-engage every bot in a fresh conversation. If we're still in the
+    # first few hot messages and this agent hasn't said anything yet, they
+    # should chime in regardless of what the model said. Otherwise god's
+    # opener gets one reply and the chain dies.
+    fresh_convo_force = (
+        memory.hot_size() < FRESH_CONVERSATION_DEPTH
+        and memory.messages_since(agent.agent_id) >= memory.hot_size()
+        and not message.is_from_god
+        and message.sender_id != agent.agent_id
+    )
+
     if not evaluation.wants_to_respond:
         # Override the model's "no" when:
-        # - the message is substantive AND the agent isn't overexposed, OR
-        # - the agent is the implicit addressee of a question (e.g. "y q idea es???"
-        #   right after that agent mentioned having one).
+        # - the agent hasn't spoken yet in a fresh conversation, OR
+        # - the agent is the implicit addressee of a question, OR
+        # - the message is substantive AND the agent isn't overexposed.
         should_override = (
             memory.last_speaker != agent.agent_id
             and memory.consecutive_count(agent.agent_id) < 3
             and (
-                is_implicitly_addressed
+                fresh_convo_force
+                or is_implicitly_addressed
                 or (is_substantive(message.text) and random.random() < OVERRIDE_PROBABILITY)
             )
         )
         if should_override:
             evaluation = Evaluation(
                 wants_to_respond=True,
-                urgency=0.85 if is_implicitly_addressed else 0.6,
+                urgency=(
+                    0.9
+                    if (fresh_convo_force or is_implicitly_addressed)
+                    else 0.6
+                ),
                 estimated_delay=1.5 if is_implicitly_addressed else 2.0,
                 is_rafaga=False,
                 rafaga_count=1,
@@ -129,9 +126,11 @@ def adjust_evaluation(
                 tool_to_use=None,
                 react_emoji=None,
                 reason=(
-                    "heuristic override: implicit addressee"
+                    "fresh conversation force-engage"
+                    if fresh_convo_force
+                    else "implicit addressee"
                     if is_implicitly_addressed
-                    else "heuristic override: substantive message"
+                    else "substantive message"
                 ),
             )
         else:
@@ -200,6 +199,11 @@ def _calculate_delay(agent: "Agent", evaluation: Evaluation, message: "GroupMess
 
     if message.is_from_god:
         delay *= 0.5
+
+    text_lower = message.text.lower()
+    if agent.name.lower() in text_lower or agent.agent_id in text_lower:
+        # Mentioned by name → respond before the others.
+        delay *= 0.4
 
     if is_reaction_message(message.text):
         delay *= 0.4

@@ -32,6 +32,9 @@ config.py
 .env
 .env.*
 
+# Personal data — the source WhatsApp export used to model the personalities
+chat.txt
+
 # SQLite database
 data/*.db
 data/*.db-journal
