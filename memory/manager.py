@@ -38,6 +38,11 @@ class GroupMessage:
     is_from_god: bool = False
     timestamp: datetime = field(default_factory=datetime.utcnow)
     telegram_message_id: int | None = None
+    # Optional image attachment (god can send a photo with caption). The
+    # generation prompt will include the image as a content block; older
+    # messages don't keep the image in hot memory beyond their own turn.
+    image_b64: str | None = None
+    image_media_type: str | None = None
 
 
 class MemoryManager:

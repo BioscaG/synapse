@@ -287,8 +287,8 @@ class Agent:
         # explicit "LO QUE RESPONDES" header stops the model from clinging to
         # whatever topic dominated the background when god (or anyone) shifts.
         hot = memory.hot_messages(16)
+        latest = hot[-1] if hot else None
         if hot:
-            latest = hot[-1]
             background = hot[:-1]
             background_lines = [
                 f"[{'DIOS' if m.is_from_god else m.sender_name}] {m.text}" for m in background
@@ -306,23 +306,48 @@ class Agent:
             latest_text = "(ninguno — abre tema)"
             topic_shift_hint = ""
 
+        image_hint = ""
+        if latest and latest.image_b64:
+            image_hint = (
+                "El último mensaje TRAE UNA IMAGEN adjunta. Reaccionas a ella como reaccionarías "
+                "tú en WhatsApp: comentas lo que ves, te ríes, preguntas detalles, lo que toque.\n\n"
+            )
+
         user_payload = (
             f"Tu memoria fría:\n{memory.format_beliefs(self.agent_id)}\n\n"
             f"Background del grupo (referencia, NO obligatorio seguir hablando de esto):\n"
             f"{background_text}\n\n"
-            f"{topic_shift_hint}"
+            f"{topic_shift_hint}{image_hint}"
             f"⮕ MENSAJE AL QUE RESPONDES:\n{latest_text}\n\n"
             f"{own_recent_section}{banned_section}{tool_section}"
             f"Devuelve un JSON array de 1 a {max_msgs} mensajes cortos en español, "
             f"conectados con el mensaje al que respondes."
         )
 
+        # Build user content. If the latest message has an image, prepend it
+        # as an image block so Haiku/Sonnet can actually see it.
+        user_content: list[dict] | str
+        if latest and latest.image_b64:
+            user_content = [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": latest.image_media_type or "image/jpeg",
+                        "data": latest.image_b64,
+                    },
+                },
+                {"type": "text", "text": user_payload},
+            ]
+        else:
+            user_content = user_payload
+
         try:
             response = await client.messages.create(
                 model=model,
                 max_tokens=600,
                 system=system_blocks,
-                messages=[{"role": "user", "content": user_payload}],
+                messages=[{"role": "user", "content": user_content}],
             )
         except Exception:
             log.exception("Generation API call failed for %s", self.agent_id)

@@ -59,7 +59,9 @@ class TelegramHub:
         self._on_idle_tick = on_idle_tick
         primary = self.apps[PRIMARY_AGENT_ID]
         primary.add_handler(
-            MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_update)
+            MessageHandler(
+                (filters.TEXT | filters.PHOTO) & ~filters.COMMAND, self._handle_update
+            )
         )
 
     # ------------------------------------------------------------------ lifecycle
@@ -141,15 +143,21 @@ class TelegramHub:
     # ------------------------------------------------------------------ incoming
     async def _handle_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = update.effective_message
-        if not message or not message.text:
+        if not message:
+            return
+        # Accept text, captioned photos, or photos without caption.
+        text = message.text or message.caption or ""
+        has_photo = bool(message.photo)
+        if not text and not has_photo:
             return
         chat = update.effective_chat
         sender = update.effective_user
         log.info(
-            "Update received: chat_id=%s sender_id=%s text=%r",
+            "Update received: chat_id=%s sender_id=%s photo=%s text=%r",
             chat.id if chat else None,
             sender.id if sender else None,
-            message.text[:60],
+            has_photo,
+            text[:60],
         )
         if chat is None or chat.id != self.group_chat_id:
             log.warning(
@@ -177,17 +185,39 @@ class TelegramHub:
         if not self._on_human_message:
             return
 
+        image_b64: str | None = None
+        image_media_type: str | None = None
+        if has_photo:
+            image_b64, image_media_type = await self._download_photo(message.photo[-1])
+            if not text:
+                # No caption: synthesise one so the prompt has a verbal anchor.
+                text = "(adjunta una foto)"
+
         gm = GroupMessage(
             sender_id="god",
             sender_name="DIOS",
-            text=message.text,
+            text=text,
             is_from_god=True,
             telegram_message_id=message.message_id,
+            image_b64=image_b64,
+            image_media_type=image_media_type,
         )
         try:
             await self._on_human_message(gm)
         except Exception:
             log.exception("Manager raised on human message")
+
+    async def _download_photo(self, photo) -> tuple[str | None, str | None]:
+        """Fetch the largest size of a Telegram photo and return (base64, mime)."""
+        import base64
+
+        try:
+            file = await self.apps[PRIMARY_AGENT_ID].bot.get_file(photo.file_id)
+            buf = await file.download_as_bytearray()
+            return base64.b64encode(bytes(buf)).decode("ascii"), "image/jpeg"
+        except Exception:
+            log.exception("Failed to download photo %s", photo.file_id)
+            return None, None
 
     # ------------------------------------------------------------------ idle ticks
     async def _idle_loop(self) -> None:
