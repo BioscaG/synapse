@@ -130,6 +130,14 @@ Vas a generar tu siguiente intervención en el grupo de Telegram. Reglas:
 - Usa TUS muletillas y errores ortográficos típicos.
 - NUNCA escribas "jajaja" — usa la variante de risa que te corresponde.
 
+EL ÚLTIMO MENSAJE MANDA:
+- Tu respuesta tiene que conectar con el ÚLTIMO mensaje, no con cualquier mensaje del background.
+- Si el último mensaje CAMBIA DE TEMA respecto al background, ABANDONAS el tema anterior
+  y sigues el nuevo. Sin "volviendo a lo de antes", sin retomar el hilo viejo, ni siquiera al
+  final de tu ráfaga. Aunque tengas algo pendiente del tema previo, hoy no toca.
+- El background está ahí solo como referencia (saber quién dijo qué antes), no como agenda.
+- NO añadas "bueno pues mañana sigo con X" ni similares para volver al tema viejo.
+
 ANTI-REPETICIÓN (importantísimo, parece más natural):
 - NO repitas frases que ya estén en el contexto, ni siquiera reformuladas.
 - Si tu PUNTO ya lo has dicho en mensajes anteriores tuyos, NO insistas:
@@ -286,11 +294,39 @@ class Agent:
         if tool_results:
             tool_section = f"Has buscado info y has encontrado:\n{tool_results}\n\n"
 
+        # Split context into background (older) + the latest message you're
+        # actually responding to. Putting the latest in its own block + an
+        # explicit "LO QUE RESPONDES" header stops the model from clinging to
+        # whatever topic dominated the background when god (or anyone) shifts.
+        hot = memory.hot_messages(16)
+        if hot:
+            latest = hot[-1]
+            background = hot[:-1]
+            background_lines = [
+                f"[{'DIOS' if m.is_from_god else m.sender_name}] {m.text}" for m in background
+            ]
+            background_text = "\n".join(background_lines) if background_lines else "(no había nada antes)"
+            latest_text = f"[{'DIOS' if latest.is_from_god else latest.sender_name}] {latest.text}"
+            topic_shift_hint = ""
+            if latest.is_from_god:
+                topic_shift_hint = (
+                    "El dios acaba de escribir. Si su mensaje CAMBIA DE TEMA respecto al background, "
+                    "abandonas el tema anterior y respondes al nuevo. No retomes el hilo viejo.\n\n"
+                )
+        else:
+            background_text = "(grupo en silencio)"
+            latest_text = "(ninguno — abre tema)"
+            topic_shift_hint = ""
+
         user_payload = (
             f"Tu memoria fría:\n{memory.format_beliefs(self.agent_id)}\n\n"
-            f"Contexto del grupo (últimos mensajes, en orden):\n{memory.format_context(15)}\n\n"
+            f"Background del grupo (referencia, NO obligatorio seguir hablando de esto):\n"
+            f"{background_text}\n\n"
+            f"{topic_shift_hint}"
+            f"⮕ MENSAJE AL QUE RESPONDES:\n{latest_text}\n\n"
             f"{own_recent_section}{banned_section}{tool_section}"
-            f"Devuelve un JSON array de 1 a {max_msgs} mensajes cortos en español."
+            f"Devuelve un JSON array de 1 a {max_msgs} mensajes cortos en español, "
+            f"conectados con el mensaje al que respondes."
         )
 
         try:

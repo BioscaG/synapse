@@ -205,6 +205,16 @@ SCENARIOS = [
     ("S7: dios cuenta algo personal", [
         "tio he tenido un dia de mierda en el curro",
     ]),
+    # Topic-shift stress tests: god opens topic A, then mid-conversation
+    # forces a hard pivot to topic B. Bots should follow B, not retread A.
+    ("S8: pivot idea -> finde", [
+        "vamos a pensar una idea de negocio",
+        "bueno dejad eso, q haceis este finde??",
+    ]),
+    ("S9: pivot startup -> personal", [
+        "una idea de startup q mole",
+        "tio jordi se ha echado novia pq sabéis???",
+    ]),
 ]
 
 

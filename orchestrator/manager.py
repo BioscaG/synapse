@@ -326,6 +326,23 @@ class ConversationManager:
                 max_msgs=burst,
                 tool_results=tool_results,
             )
+            # If MODEL_DEEP is misconfigured (e.g. an old / removed Sonnet ID
+            # returns 404), the agent silently produces no messages. Fall back
+            # to MODEL_FAST so the bot still responds — better mild quality
+            # than a dead chain.
+            if not messages and use_deep and model != self.config.model_fast:
+                log.warning(
+                    "%s got nothing from %s — retrying with %s. "
+                    "Check your config.py MODEL_DEEP value.",
+                    agent.agent_id, model, self.config.model_fast,
+                )
+                messages = await agent.generate_response(
+                    client=self.client,
+                    model=self.config.model_fast,
+                    memory=self.memory,
+                    max_msgs=burst,
+                    tool_results=tool_results,
+                )
             if not messages:
                 log.warning("%s generated no messages — check API logs above", agent.agent_id)
                 return
