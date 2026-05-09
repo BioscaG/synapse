@@ -1,0 +1,41 @@
+{
+  "guido": {
+    "beliefs": [
+      {"category": "personal", "content": "Trabajo en prácticas en una empresa tech, entrevista en McKinsey pendiente/hecha", "confidence": 0.9},
+      {"category": "opinion", "content": "No quiero acabar en un curro corporativo cobrando 2k/mes en 10 años", "confidence": 0.95},
+      {"category": "opinion", "content": "La IA me hace sentir tonto a veces, pero es absurdo no usarla", "confidence": 0.8},
+      {"category": "knowledge", "content": "Tuve un bot de trading llamado bioscabot que compraba y vendía solo", "confidence": 0.9},
+      {"category": "idea_status", "content": "Idea de sistema de escucha en almacenes logísticos → DESCARTADA. Víctor le pidió a ChatGPT que buscara pegas y encontró 5 razones fatales: el mercado target son empresas mal gestionadas que no compran tech, ya existen gigantes como Honeywell, los datos de voz son basura, premia el mal proceso, y la visión artificial lo hará mejor", "confidence": 0.9},
+      {"category": "personal", "content": "Tengo casa familiar en Cerdaña. Me gustan viajes aventureros (Laponia, Islandia)", "confidence": 0.9},
+      {"category": "opinion", "content": "Pago Claude a 100€/mes y lo uso para todo. Mi cerebro ya es incapaz de programar sin IA", "confidence": 0.85},
+      {"category": "relationship", "content": "Víctor es el analista del grupo, busca pegas a mis ideas pero suele tener razón", "confidence": 0.85},
+      {"category": "relationship", "content": "Jordi es el ejecutor: mientras pensamos él ya lo ha hecho", "confidence": 0.85}
+    ]
+  },
+  "victor": {
+    "beliefs": [
+      {"category": "personal", "content": "Hice/haré erasmus en Georgia. Tengo novia, Nerea", "confidence": 0.9},
+      {"category": "opinion", "content": "Para invertir bien o le dedicas muchas horas o metes en fondos indexados/ETFs. El trading especulativo es imposible sin ventaja", "confidence": 0.9},
+      {"category": "opinion", "content": "Si se llega a AGI, estamos cooked hagamos lo que hagamos. Nuestro trabajo será usar la IA y ya", "confidence": 0.7},
+      {"category": "knowledge", "content": "Vi un vídeo sobre cómo funcionan los mercados y es imposible ganar dinero sin estrategia única, más datos que nadie, o ser el más rápido", "confidence": 0.85},
+      {"category": "opinion", "content": "Jordi debería copiar cuentas de piano existentes en Instagram, hacer covers de Quevedo, y directos en TikTok", "confidence": 0.8},
+      {"category": "personal", "content": "Pago Claude a 19€/mes. Guido paga 200€ en suscripciones varias", "confidence": 0.8},
+      {"category": "opinion", "content": "Cualquier idea de negocio que tengamos, ChatGPT encontrará pegas. Pero eso no significa que no se pueda hacer", "confidence": 0.7},
+      {"category": "relationship", "content": "Guido lanza ideas en bruto, hay que pulirlas antes de ejecutar", "confidence": 0.8},
+      {"category": "relationship", "content": "Jordi se lanza rápido a ejecutar pero a veces sin validar la idea", "confidence": 0.8}
+    ]
+  },
+  "jordi": {
+    "beliefs": [
+      {"category": "personal", "content": "Estudio mates en la UPC. Hice Erasmus en Praga (Dejvice). Prácticas en Amphora haciendo TFG con ML sobre predicciones de volumen de ventas", "confidence": 0.95},
+      {"category": "personal", "content": "Toco el piano. Tengo canal de YouTube. Quiero hacer covers en Instagram/TikTok. Tengo cámara POV para grabar", "confidence": 0.9},
+      {"category": "knowledge", "content": "Hice un bot de Telegram para inversión en 2 horas. Me iba bien: +30% en 2 meses. Pero probablemente es suerte", "confidence": 0.75},
+      {"category": "opinion", "content": "Usar Claude Code para el TFG es una chetada. El Claude me hace el código + la memoria en LaTeX", "confidence": 0.85},
+      {"category": "personal", "content": "Sergi tiene MCPs con Google Docs, Gmail, Drive y el Claude le escribe correos al tutor del TFG automáticamente", "confidence": 0.8},
+      {"category": "opinion", "content": "El erasmus fue como desbloquear el 40% de la vida que desconocía", "confidence": 0.9},
+      {"category": "idea_status", "content": "Plugin de Wallapop con IA que responda automáticamente a compradores y negocie el precio → propuesta, sin investigar aún", "confidence": 0.5},
+      {"category": "relationship", "content": "Guido es el de las ideas, Víctor es el que pone los frenos. Yo monto el prototipo", "confidence": 0.85},
+      {"category": "relationship", "content": "Víctor a veces me da palo de tantas pegas, pero acaba teniendo razón", "confidence": 0.7}
+    ]
+  }
+}
