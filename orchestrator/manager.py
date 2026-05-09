@@ -59,10 +59,12 @@ class ManagerConfig:
     max_messages_per_convo: int
     burst_inter_delay: tuple[float, float]
     conversation_timeout_seconds: int = 300
-    # If god speaks after more than this many seconds of silence, the hot
-    # context is wiped before processing the new message — otherwise the bots
-    # bring up the previous conversation as if it were still going.
-    stale_gap_seconds: int = 120
+    # If god speaks after more than this many seconds *since the last activity
+    # from anyone* (god or bots), the hot context is wiped before processing
+    # the new message — otherwise the bots bring up the previous conversation
+    # as if it were still going. Aligned with the 5-minute idle summariser so
+    # only conversations that have actually died get cleared.
+    stale_gap_seconds: int = 300
 
 
 class ConversationManager:
@@ -149,6 +151,10 @@ class ConversationManager:
             )
             self.memory.push_message(last_msg)
             self._convo_message_count += 1
+            # Track every message — god + bots — so the stale-gap detector
+            # only fires when nobody (not even the bots themselves) has spoken
+            # for a long time.
+            self._last_activity_at = datetime.utcnow()
             agent.last_msg_time = time.time()
 
         if last_msg and self._can_continue_conversation():
